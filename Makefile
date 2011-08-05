@@ -1,7 +1,9 @@
+CFLAGS+=-D_POSIX_C_SOURCE=200809 -I/usr/local/include
+LDFLAGS+=-L/usr/local/lib -lsqlite3
 all: openvpn-db
 
 clean:
 	rm -f openvpn-db
 
 openvpn-db: openvpn-db.c
-	gcc -o openvpn-db openvpn-db.c -I/usr/local/include -L/usr/local/lib -lsqlite3
+	$(CC) $(CFLAGS) -o openvpn-db openvpn-db.c $(LDFLAGS)
