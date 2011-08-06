@@ -225,7 +225,7 @@ const char *get_sql =
 	"SELECT ( SELECT COUNT(*) FROM Params WHERE Name = ?1 ),\n"
         "       ( SELECT Value FROM Params WHERE Name = ?1 AND Param = ?2 );";
 
-int get_conf(int argc, const char *argv[]) {
+void get_conf(int argc, const char *argv[]) {
 	sqlite3_stmt *select_param;
 
 	if ( argc != 5 )
@@ -270,7 +270,7 @@ int get_conf(int argc, const char *argv[]) {
 		exit(2);
 	}
 
-	if ( puts(value) == EOF ) {
+	if ( puts((const char*)value) == EOF ) {
 		fprintf(stderr, "failed to write to stdout");
 		sqlite3_finalize(select_param);
 		exit(EX_IOERR);

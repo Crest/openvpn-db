@@ -1,4 +1,4 @@
-CFLAGS+=-D_POSIX_C_SOURCE=200809 -I/usr/local/include
+CFLAGS+=-std=c99 -Wall -pedantic -D_POSIX_C_SOURCE=200809 -D__BSD_VISIBLE -I/usr/local/include
 LDFLAGS+=-L/usr/local/lib -lsqlite3
 all: openvpn-db
 
