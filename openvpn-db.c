@@ -177,7 +177,6 @@ void read_conf(int argc, const char *argv[]) {
 			sqlite3_finalize(insert_param);
 			exit(EX_SOFTWARE);
 		}
-		fprintf(stderr, "param : %s\nvalue : %s\n\n", line, value);
 		if ( value && sqlite3_bind_text(insert_param, 3, value, -1, SQLITE_TRANSIENT) != SQLITE_OK ) {
                 	fprintf(stderr, "failed to bind parameter : %s\n", sqlite3_errmsg(db));
 			sqlite3_finalize(insert_param);
