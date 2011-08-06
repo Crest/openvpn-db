@@ -6,7 +6,7 @@
 #include <sqlite3.h>
 
 typedef enum {
-	init, show, read, get
+	init, show, read, get, list
 } verb_t;
 
 verb_t verb = 0;
@@ -19,6 +19,7 @@ void usage(const char *name) {
 	fprintf(stderr, "       %s show <DB> <NAME>\n", name);
 	fprintf(stderr, "       %s read <DB> <NAME>\n", name);
 	fprintf(stderr, "       %s get  <DB> <NAME> <PARAM>\n", name);
+	fprintf(stderr, "       %s list <DB>\n", name);
 	exit(EX_USAGE);
 }
 
@@ -37,6 +38,10 @@ int get_verb(const char *name) {
 	}
 	if (!strcmp(name, "get")) {
 		verb = get;
+		return 0;
+	}
+	if (!strcmp(name, "list")) {
+		verb = list;
 		return 0;
 	}
 	return -1;
@@ -123,10 +128,12 @@ void show_conf(int argc, const char *argv[]) {
 				
 				if ( value != NULL && printf("%s %s\n", param, value) < 0 ) {
 					sqlite3_finalize(select_name);
+					fputs("faield to write to standard output.\n", stderr);
 					exit(EX_IOERR);
 				}
 				if ( value == NULL && printf("%s\n", param) < 0 ) {
 					sqlite3_finalize(select_name);
+					fputs("faield to write to standard output.\n", stderr);
 					exit(EX_IOERR);
 				}
 				break;
@@ -279,6 +286,42 @@ void get_conf(int argc, const char *argv[]) {
 	sqlite3_finalize(select_param);
 }
 
+void list_conf(int argc, const char *argv[]) {
+	sqlite3_stmt *select_conf = NULL;
+
+	if ( argc != 3 )
+		usage(argv[0]);
+	
+	if ( sqlite3_prepare_v2(db, "SELECT DISTINCT Name FROM Params ORDER BY Name ASC;", -1, &select_conf, NULL ) != SQLITE_OK ) {
+		fprintf(stderr, "failed to pepare statement : %s\n", sqlite3_errmsg(db));
+		sqlite3_finalize(select_conf);
+		exit(EX_SOFTWARE);
+	}
+
+        while ( 1 ) {
+		switch ( sqlite3_step(select_conf) ) {
+                        case SQLITE_DONE:
+				sqlite3_finalize(select_conf);
+				return;
+			
+			case SQLITE_ROW: {
+				const unsigned char *name = sqlite3_column_text(select_conf, 0);
+				if ( puts((const char*)name) == EOF ) {
+					sqlite3_finalize(select_conf);
+					fputs("failed to write to standard output.\n", stderr);
+				}
+				break;
+			}
+
+			default:
+				fprintf(stderr, "failed to step trough result set : %s\n", sqlite3_errmsg(db));
+				sqlite3_finalize(select_conf);
+				exit(EX_SOFTWARE);
+				break;
+		}
+	}
+}
+
 int main(int argc, const char *argv[]) {
 	if ( argc < 2 || get_verb(argv[1]) )
 		usage(argv[0]);
@@ -305,6 +348,12 @@ int main(int argc, const char *argv[]) {
 			get_db(argc, argv);
 			init_db();
 			get_conf(argc, argv);
+			break;
+
+		case list:
+			get_db(argc, argv);
+			init_db();
+			list_conf(argc, argv);
 			break;
 
 		default:
