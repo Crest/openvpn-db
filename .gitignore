@@ -2,3 +2,5 @@ foo
 bar
 openvpn-db
 .*.swp
+openvpn-db.core
+test
