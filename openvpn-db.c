@@ -6,7 +6,7 @@
 #include <sqlite3.h>
 
 typedef enum {
-	init, show, read
+	init, show, read, get
 } verb_t;
 
 verb_t verb = 0;
@@ -18,6 +18,7 @@ void usage(const char *name) {
 	fprintf(stderr, "usage: %s init <DB>\n", name);
 	fprintf(stderr, "       %s show <DB> <NAME>\n", name);
 	fprintf(stderr, "       %s read <DB> <NAME>\n", name);
+	fprintf(stderr, "       %s get  <DB> <NAME> <PARAM>\n", name);
 	exit(EX_USAGE);
 }
 
@@ -32,6 +33,10 @@ int get_verb(const char *name) {
 	}
 	if (!strcmp(name, "read")) {
 		verb = read;
+		return 0;
+	}
+	if (!strcmp(name, "get")) {
+		verb = get;
 		return 0;
 	}
 	return -1;
@@ -216,6 +221,64 @@ void read_conf(int argc, const char *argv[]) {
 	}
 }
 
+const char *get_sql =
+	"SELECT ( SELECT COUNT(*) FROM Params WHERE Name = ?1 ),\n"
+        "       ( SELECT Value FROM Params WHERE Name = ?1 AND Param = ?2 );";
+
+int get_conf(int argc, const char *argv[]) {
+	sqlite3_stmt *select_param;
+
+	if ( argc != 5 )
+		usage(argv[0]);
+	
+	if ( sqlite3_prepare_v2(db, get_sql, -1, &select_param, NULL) != SQLITE_OK ) {
+		fprintf(stderr, "failed to prepare statement : %s\n", sqlite3_errmsg(db));
+		sqlite3_finalize(select_param);
+		exit(EX_SOFTWARE);
+	}
+        
+	if ( sqlite3_bind_text(select_param, 1, argv[3], -1, SQLITE_STATIC) != SQLITE_OK ) {
+		fprintf(stderr, "failed to bind parameter : %s\n", sqlite3_errmsg(db));
+		sqlite3_finalize(select_param);
+		exit(EX_SOFTWARE);
+	}
+
+	if ( sqlite3_bind_text(select_param, 2, argv[4], -1, SQLITE_STATIC) != SQLITE_OK ) {
+		fprintf(stderr, "failed to bind parameter : %s\n", sqlite3_errmsg(db));
+		sqlite3_finalize(select_param);
+		exit(EX_SOFTWARE);
+	}
+
+	if ( sqlite3_step(select_param) != SQLITE_ROW ) {
+		fprintf(stderr, "logic error in get_conf().\n");
+		sqlite3_finalize(select_param);
+		exit(EX_SOFTWARE);
+	}
+
+	sqlite3_int64 count = sqlite3_column_int64(select_param, 0);
+	const unsigned char *value = sqlite3_column_text(select_param, 1);
+
+	if ( !count ) {
+		fprintf(stderr, "their is no config named \"%s\".\n", argv[3]);
+		sqlite3_finalize(select_param);
+		exit(1);
+	}
+
+	if ( !value ) {
+		fprintf(stderr, "their is parameter named \"%s\" in the config named \"%s\".\n", argv[4], argv[3]);
+		sqlite3_finalize(select_param);
+		exit(2);
+	}
+
+	if ( puts(value) == EOF ) {
+		fprintf(stderr, "failed to write to stdout");
+		sqlite3_finalize(select_param);
+		exit(EX_IOERR);
+	}
+
+	sqlite3_finalize(select_param);
+}
+
 int main(int argc, const char *argv[]) {
 	if ( argc < 2 || get_verb(argv[1]) )
 		usage(argv[0]);
@@ -234,6 +297,11 @@ int main(int argc, const char *argv[]) {
 		case read:
 			get_db(argc, argv);
 			read_conf(argc, argv);
+			break;
+
+		case get:
+			get_db(argc, argv);
+			get_conf(argc, argv);
 			break;
 
 		default:
