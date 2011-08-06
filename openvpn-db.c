@@ -165,20 +165,30 @@ void read_conf(int argc, const char *argv[]) {
 	}
 	
 	while ( (linelen = getline(&line, &linecap, stdin)) > 0 ) {
-		char *value = line;
+		char *value = line, c;
 		if ( !strsep(&value, "#;\n") ) continue; // ignore comments and newlines
 		value = line;
 		strsep(&value, " \t");
+		while (value && (c = *value, c == ' ' || c == '\t')) value++;
+		if ( strlen(line) == 0 ) continue;
+
 		if ( sqlite3_bind_text(insert_param, 2, line, -1, SQLITE_TRANSIENT) != SQLITE_OK ) {
 			fprintf(stderr, "failed to bind parameter : %s\n", sqlite3_errmsg(db));
 			sqlite3_finalize(insert_param);
 			exit(EX_SOFTWARE);
 		}
-		if ( sqlite3_bind_text(insert_param, 3, value, -1, SQLITE_TRANSIENT) != SQLITE_OK ) {
+		fprintf(stderr, "param : %s\nvalue : %s\n\n", line, value);
+		if ( value && sqlite3_bind_text(insert_param, 3, value, -1, SQLITE_TRANSIENT) != SQLITE_OK ) {
                 	fprintf(stderr, "failed to bind parameter : %s\n", sqlite3_errmsg(db));
 			sqlite3_finalize(insert_param);
 			exit(EX_SOFTWARE);
 		}
+		if ( !value && sqlite3_bind_null(insert_param, 3) != SQLITE_OK ) {
+			fprintf(stderr, "failed to bind parameter : %s\n", sqlite3_errmsg(db));
+			sqlite3_finalize(insert_param);
+			exit(EX_SOFTWARE);
+		}
+
 		if ( sqlite3_step(insert_param) != SQLITE_DONE ) {
 			fprintf(stderr, "failed to insert into tabel : %s\n", sqlite3_errmsg(db));
 			sqlite3_finalize(insert_param);
