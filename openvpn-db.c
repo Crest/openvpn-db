@@ -291,16 +291,19 @@ int main(int argc, const char *argv[]) {
 		
 		case show:
 			get_db(argc, argv);
+			init_db();
 			show_conf(argc, argv);
 			break;
 
 		case read:
 			get_db(argc, argv);
+			init_db();
 			read_conf(argc, argv);
 			break;
 
 		case get:
 			get_db(argc, argv);
+			init_db();
 			get_conf(argc, argv);
 			break;
 
