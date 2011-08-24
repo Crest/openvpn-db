@@ -1,13 +1,25 @@
+#include <errno.h>
+#include <limits.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sysexits.h>
+#include <time.h>
+#include <unistd.h>
+#include <inttypes.h>
 
 #include <sqlite3.h>
 
 typedef enum {
-	init, show, read, get, list
+	init, show, read_, get, list,
+	put_file, get_file, delete_file, list_files,
+	attach_file, detach_file, list_attached
 } verb_t;
+
+typedef struct named_verb {
+	const char   *const name;
+	const verb_t        verb;
+} named_verb_t;
 
 verb_t verb = 0;
 const char *db_path = NULL;
@@ -15,36 +27,60 @@ sqlite3 *db = NULL;
 
 
 void usage(const char *name) {
-	fprintf(stderr, "usage: %s init <DB>\n", name);
-	fprintf(stderr, "       %s show <DB> <NAME>\n", name);
-	fprintf(stderr, "       %s read <DB> <NAME>\n", name);
-	fprintf(stderr, "       %s get  <DB> <NAME> <PARAM>\n", name);
-	fprintf(stderr, "       %s list <DB>\n", name);
+	fprintf(stderr, "usage: %s init          <DB>\n", name);
+	fprintf(stderr, "       %s show          <DB> <NAME>\n", name);
+	fprintf(stderr, "       %s read          <DB> <NAME>\n", name);
+	fprintf(stderr, "       %s get           <DB> <NAME> <PARAM>\n", name);
+	fprintf(stderr, "       %s list          <DB>\n", name);
+	
+	fprintf(stderr, "       %s put-file      <DB> <FILE>\n", name);
+	fprintf(stderr, "       %s get-file      <DB> <FILE>\n", name);
+	fprintf(stderr, "       %s delete-file   <DB> <FILE>\n", name);
+	fprintf(stderr, "       %s list-files    <DB>\n", name);
+
+	fprintf(stderr, "       %s attach-file   <DB> <NAME> <FILE>\n", name);
+	fprintf(stderr, "       %s detach-file   <DB> <NAME> <FILE>\n", name);
+	fprintf(stderr, "       %s list-attached <DB> <NAME>\n", name);
 	exit(EX_USAGE);
 }
 
+int cmp_verb(const void *a, const void *b) {
+	const named_verb_t *const restrict v1 = (const named_verb_t*) a;
+	const named_verb_t *const restrict v2 = (const named_verb_t*) b;
+	return strcmp(v1->name, v2->name);
+}
+
 int get_verb(const char *name) {
-	if (!strcmp(name, "init")) {
-		verb = init;
-		return 0;
-	}
-	if (!strcmp(name, "show")) {
-		verb = show;
-		return 0;
-	}
-	if (!strcmp(name, "read")) {
-		verb = read;
-		return 0;
-	}
-	if (!strcmp(name, "get")) {
-		verb = get;
-		return 0;
-	}
-	if (!strcmp(name, "list")) {
-		verb = list;
-		return 0;
-	}
-	return -1;
+	const named_verb_t verbs[] = { // keep sorted
+		{ .name = "attach-file",
+		  .verb = attach_file },
+		{ .name = "delete-file",
+		  .verb = delete_file },
+		{ .name = "detach-file",
+		  .verb = detach_file },
+		{ .name = "get",
+		  .verb = get },
+		{ .name = "get-file",
+		  .verb = get_file },
+		{ .name = "init",
+		  .verb = init },
+		{ .name = "list",
+		  .verb = list },
+		{ .name = "list-attached",
+		  .verb = list_attached },
+		{ .name = "list-files",
+		  .verb = list_files },
+		{ .name = "put-file",
+		  .verb = put_file },
+		{ .name = "read",
+		  .verb = read_ },
+		{ .name = "show",
+		  .verb = show }
+	};
+	const named_verb_t key = { .name = name, .verb = 0 };
+	const named_verb_t *const found = (const named_verb_t*) bsearch(&key, &verbs, sizeof(verbs) / sizeof(named_verb_t), sizeof(named_verb_t), cmp_verb);
+	verb = found ? found->verb : -1;
+	return !found;
 }
 
 void close_db(void) {
@@ -81,8 +117,15 @@ const char *init_sql =
 	"    Value STRING,\n"
 	"    PRIMARY KEY ( Name, Param )\n"
 	");\n"
-	"CREATE INDEX IF NOT EXISTS ParamByName  ON Params ( Name  );\n"
-	"CREATE INDEX IF NOT EXISTS ParamByParam ON Params ( Param );\n";
+	"CREATE TABLE IF NOT EXISTS Files (\n"
+	"    Name    STRING NOT NULL,\n"
+	"    Content BLOB NOT NULL,\n"
+	"    PRIMARY KEY ( Name )\n"
+	");\n"
+	"CREATE INDEX IF NOT EXISTS ParamByName    ON Params ( Name  );\n"
+	"CREATE INDEX IF NOT EXISTS ParamByParam   ON Params ( Param );\n"
+	"CREATE INDEX IF NOT EXISTS ParamByPrimary ON Params ( Name, Param );\n"
+	"CREATE INDEX IF NOT EXISTS FileByName     ON Files  ( Name );\n";
 
 void init_db() {
 	char *err = NULL;
@@ -201,7 +244,7 @@ void read_conf(int argc, const char *argv[]) {
 		}
 
 		if ( sqlite3_step(insert_param) != SQLITE_DONE ) {
-			fprintf(stderr, "failed to insert into tabel : %s\n", sqlite3_errmsg(db));
+			fprintf(stderr, "failed to insert into table : %s\n", sqlite3_errmsg(db));
 			sqlite3_finalize(insert_param);
 			exit(EX_SOFTWARE);
 		}
@@ -322,38 +365,289 @@ void list_conf(int argc, const char *argv[]) {
 	}
 }
 
+int copy_file(int src_fd, int dst_fd, uint64_t *len) {
+	int eof = 0;
+	uint64_t len_ = 0;
+	do {            
+		uint8_t buf[128*1024];
+		const struct timespec _10ms = { .tv_sec = 0, .tv_nsec = 10000000 };
+		size_t i = 0;
+		ssize_t delta;
+		do {
+			delta = read(src_fd, buf + i, sizeof(buf) - i);
+			if ( delta > 0 ) {
+                        	i += delta;
+			} else if ( delta == 0 ) {
+				eof = 1;
+			} else { 
+				switch ( errno ) {
+					case EAGAIN:
+						nanosleep(&_10ms, NULL);
+
+					case EINTR:
+						break;
+
+					default:
+						return 1;
+				}
+			}
+		} while ( !eof && i != sizeof(buf) );
+
+		size_t j = 0;
+		while ( j < i ) {
+			delta = write(dst_fd, buf + j, i - j);
+			if ( delta >= 0 ) {
+				j += delta;
+				len_ += delta;
+			} else {
+                                switch ( errno ) {
+					case EAGAIN:
+						nanosleep(&_10ms, NULL);
+					
+					case EINTR:
+						break;
+					
+					default:
+						return 2;
+				}
+			}
+		}
+	} while ( !eof );
+	if ( len ) *len = len_;
+
+	return 0;
+}
+
+void write_blob(sqlite3_blob *blob, int src_fd) {
+	int eof = 0;
+	int off = 0;
+	do {
+		uint8_t buf[128*1024];
+		const struct timespec _10ms = { .tv_sec = 0, .tv_nsec = 10000000 };
+		size_t i = 0;
+		ssize_t delta;
+
+		do {
+			delta = read(src_fd, buf + i, sizeof(buf) - i );
+			if ( delta > 0 ) {
+				i += delta;
+			} else if ( delta == 0 ) {
+				eof = 1;
+			} else {
+				switch ( errno ) {
+					case EAGAIN:
+						nanosleep(&_10ms, NULL);
+
+					case EINTR:
+						break;
+
+					default:
+                                                perror("failed to read from fd");
+						sqlite3_blob_close(blob);
+						exit(EX_IOERR);
+						break;
+				}
+			}
+		} while ( !eof && i != sizeof(buf) );
+
+		if ( sqlite3_blob_write(blob, buf, i, off) != SQLITE_OK ) {
+			fprintf(stderr, "failed to write to blob : %s\n", sqlite3_errmsg(db));
+			sqlite3_blob_close(blob);
+			exit(EX_IOERR);
+		}
+
+		off += delta;
+	} while ( !eof );
+}
+
+void store_file(int argc, const char *argv[]) {
+	if ( argc != 4 ) 
+		usage(argv[0]);
+	
+	const char *tmp_template = "/tmp/openvpn-db.XXXXXXXX";
+	char tmp_name[PATH_MAX];
+	strncpy(tmp_name, tmp_template, PATH_MAX);
+	int tmp_fd = mkstemp(tmp_name);
+	if ( tmp_fd == -1 ) {
+		perror("failed to create temporary file");
+		exit(EX_OSERR);
+	}
+	if ( unlink(tmp_name) ) {
+		perror("failed to unlink emporary file");
+		exit(EX_OSERR);
+	}
+	
+	uint64_t len;
+	if ( copy_file(STDIN_FILENO, tmp_fd, &len) ) {
+		perror("failed to copy stdin to temporary file");
+		exit(EX_IOERR);
+	}
+
+	if ( lseek(tmp_fd, 0, SEEK_SET) == -1 ) {
+        	perror("failed to rewind temporaray file");
+		exit(EX_IOERR);
+	}
+	
+	sqlite3_stmt *insert_file = NULL;
+	if ( sqlite3_prepare_v2(db, "INSERT OR REPLACE INTO Files ( Name, Content ) VALUES ( ?, ? );", -1, &insert_file, NULL) != SQLITE_OK ) {
+        	fprintf(stderr, "failed to prepare statment : %s\n", sqlite3_errmsg(db));
+		sqlite3_finalize(insert_file);
+		exit(EX_SOFTWARE);
+	}
+	if ( sqlite3_bind_text(insert_file, 1, argv[3], -1, SQLITE_STATIC) != SQLITE_OK ) {
+		fprintf(stderr, "failed to bind parameter : %s\n", sqlite3_errmsg(db));
+		sqlite3_finalize(insert_file);
+		exit(EX_SOFTWARE);
+	}
+	if ( !(len <= (uint64_t)INT_MAX) ) {
+		fprintf(stderr, "the SQLite 3 API doesn't support blobs larger than INT_MAX. Length of %" PRIu64 " is larger than %i.\n", len, INT_MAX);
+		sqlite3_finalize(insert_file);
+		exit(EX_SOFTWARE);
+	}
+	if ( sqlite3_bind_zeroblob(insert_file, 2, (int) len) != SQLITE_OK ) {
+		fprintf(stderr, "failed to bind parameter : %s\n", sqlite3_errmsg(db));
+		sqlite3_finalize(insert_file);
+		exit(EX_SOFTWARE);
+	}
+	if ( sqlite3_step(insert_file) != SQLITE_DONE ) {
+		fprintf(stderr, "failed to insert into table : %s\n", sqlite3_errmsg(db));
+		sqlite3_finalize(insert_file);
+		exit(EX_SOFTWARE);
+	}
+	sqlite3_finalize(insert_file);
+	
+	sqlite3_blob *blob = NULL;
+	sqlite3_int64 row_id = sqlite3_last_insert_rowid(db);
+	if ( sqlite3_blob_open(db, "main", "Files", "Content", row_id, 1, &blob) != SQLITE_OK ) {
+		fprintf(stderr, "failed to open blob for writing : %s\n", sqlite3_errmsg(db));
+		sqlite3_blob_close(blob);
+		exit(EX_SOFTWARE);
+	}
+	
+	write_blob(blob, tmp_fd);
+	sqlite3_blob_close(blob);
+}
+
+void read_blob(sqlite3_blob *blob, int dst_fd) {
+	int len = sqlite3_blob_bytes(blob);
+	int off = 0;
+	uint8_t buf[128*1024];
+	const struct timespec _10ms = { .tv_sec = 0, .tv_nsec = 10000000 };
+
+	while ( off < len ) {
+		int n = sizeof(buf) > len - off ? len - off : sizeof(buf);
+		if ( sqlite3_blob_read(blob, buf, n, off) != SQLITE_OK ) {
+			fprintf(stderr, "failed to read from blob : %s\n", sqlite3_errmsg(db));
+			sqlite3_blob_close(blob);
+			exit(EX_IOERR);
+		}
+
+		size_t j = 0;
+		while ( j < n ) {
+                	ssize_t delta = write(dst_fd, buf + j, n - j);
+			if ( delta >= 0 ) {
+				j += delta;
+			} else {
+				switch ( errno ) {
+					case EAGAIN:
+						nanosleep(&_10ms, NULL);
+
+					case EINTR:
+						break;
+					
+					default:
+						perror("failed to write to fd");
+						sqlite3_blob_close(blob);
+						exit(EX_IOERR);
+						break;
+				}
+			}
+		}
+		off += n;
+	}
+}
+
+void retrieve_file(int argc, const char *argv[]) {
+	if ( argc != 4 )
+		usage(argv[0]);
+	
+	sqlite3_stmt *select_file = NULL;
+
+	if ( sqlite3_prepare_v2(db, "SELECT _rowid_ FROM Files WHERE Name = ?;", -1, &select_file, NULL) != SQLITE_OK ) {
+        	fprintf(stderr, "failed to prepare statement : %s\n", sqlite3_errmsg(db));
+		sqlite3_finalize(select_file);
+		exit(EX_SOFTWARE);
+	}
+
+	if ( sqlite3_bind_text(select_file, 1, argv[3], -1, SQLITE_STATIC) != SQLITE_OK ) {
+        	fprintf(stderr, "failed to bind parameter to statement : %s\n", sqlite3_errmsg(db));
+		sqlite3_finalize(select_file);
+		exit(EX_SOFTWARE);
+	}
+
+	sqlite3_int64 row_id = -1;
+	switch ( sqlite3_step(select_file) ) {
+		case SQLITE_ROW:
+			row_id = sqlite3_column_int64(select_file, 0);
+			break;
+		
+		case SQLITE_DONE:
+			fprintf(stderr, "Their is no file named \"%s\n store in the database.\n", argv[3]);
+			sqlite3_finalize(select_file);
+			exit(1);
+			break;
+
+		default:
+			fprintf(stderr, "failed to select file : %s\n", sqlite3_errmsg(db));
+			sqlite3_finalize(select_file);
+			exit(EX_SOFTWARE);
+			break;
+	}
+	sqlite3_finalize(select_file);
+
+	sqlite3_blob *blob = NULL;
+	if ( sqlite3_blob_open(db, "main", "Files", "Content", row_id, 0, &blob) != SQLITE_OK ) {
+        	fprintf(stderr, "failed to open blob for reading : %s\n", sqlite3_errmsg(db));
+		sqlite3_blob_close(blob);
+		exit(EX_SOFTWARE);
+	}
+	
+	read_blob(blob, STDOUT_FILENO);
+	sqlite3_blob_close(blob);
+}
+
 int main(int argc, const char *argv[]) {
 	if ( argc < 2 || get_verb(argv[1]) )
 		usage(argv[0]);
 
+	get_db(argc, argv);
+	init_db();
 	switch ( verb ) {
         	case init:
-			get_db(argc, argv);
-			init_db();
 			break;
 		
 		case show:
-			get_db(argc, argv);
-			init_db();
 			show_conf(argc, argv);
 			break;
 
-		case read:
-			get_db(argc, argv);
-			init_db();
+		case read_:
 			read_conf(argc, argv);
 			break;
 
 		case get:
-			get_db(argc, argv);
-			init_db();
 			get_conf(argc, argv);
 			break;
 
 		case list:
-			get_db(argc, argv);
-			init_db();
 			list_conf(argc, argv);
+			break;
+
+		case put_file:
+			store_file(argc, argv);
+			break;
+
+		case get_file:
+			retrieve_file(argc, argv);
 			break;
 
 		default:
