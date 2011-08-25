@@ -122,10 +122,18 @@ const char *init_sql =
 	"    Content BLOB NOT NULL,\n"
 	"    PRIMARY KEY ( Name )\n"
 	");\n"
+	"CREATE TABLE IF NOT EXISTS Edges (\n"
+	"    Name STRING NOT NULL,\n"
+	"    File STRING NOT NULL,\n"
+	"    PRIMARY KEY ( Name, File )\n"
+	");\n"
 	"CREATE INDEX IF NOT EXISTS ParamByName    ON Params ( Name  );\n"
 	"CREATE INDEX IF NOT EXISTS ParamByParam   ON Params ( Param );\n"
 	"CREATE INDEX IF NOT EXISTS ParamByPrimary ON Params ( Name, Param );\n"
-	"CREATE INDEX IF NOT EXISTS FileByName     ON Files  ( Name );\n";
+	"CREATE INDEX IF NOT EXISTS FileByName     ON Files  ( Name );\n"
+	"CREATE INDEX IF NOT EXISTS EdgeByName     ON Edges  ( Name );\n"
+	"CREATE INDEX IF NOT EXISTS EdgeByFile     ON Edges  ( File );\n"
+	"CREATE INDEX IF NOT EXISTS EdgeByPrimary  ON Edges  ( Name, File );\n";
 
 void init_db() {
 	char *err = NULL;
@@ -230,28 +238,33 @@ void read_conf(int argc, const char *argv[]) {
 		if ( sqlite3_bind_text(insert_param, 2, line, -1, SQLITE_TRANSIENT) != SQLITE_OK ) {
 			fprintf(stderr, "failed to bind parameter : %s\n", sqlite3_errmsg(db));
 			sqlite3_finalize(insert_param);
+			sqlite3_exec(db, "ROLLBACK;", NULL, NULL, NULL);
 			exit(EX_SOFTWARE);
 		}
 		if ( value && sqlite3_bind_text(insert_param, 3, value, -1, SQLITE_TRANSIENT) != SQLITE_OK ) {
                 	fprintf(stderr, "failed to bind parameter : %s\n", sqlite3_errmsg(db));
 			sqlite3_finalize(insert_param);
+			sqlite3_exec(db, "ROLLBACK;", NULL, NULL, NULL);
 			exit(EX_SOFTWARE);
 		}
 		if ( !value && sqlite3_bind_null(insert_param, 3) != SQLITE_OK ) {
 			fprintf(stderr, "failed to bind parameter : %s\n", sqlite3_errmsg(db));
 			sqlite3_finalize(insert_param);
+			sqlite3_exec(db, "ROLLBACK;", NULL, NULL, NULL);
 			exit(EX_SOFTWARE);
 		}
 
 		if ( sqlite3_step(insert_param) != SQLITE_DONE ) {
 			fprintf(stderr, "failed to insert into table : %s\n", sqlite3_errmsg(db));
 			sqlite3_finalize(insert_param);
+			sqlite3_exec(db, "ROLLBACK;", NULL, NULL, NULL);
 			exit(EX_SOFTWARE);
 		}
 
 		if ( sqlite3_reset(insert_param) != SQLITE_OK ) {
 			fprintf(stderr, "failed to reset insert statement : %s\n", sqlite3_errmsg(db));
 			sqlite3_finalize(insert_param);
+			sqlite3_exec(db, "ROLLBACK;", NULL, NULL, NULL);
 			exit(EX_SOFTWARE);
 		}
 	}
@@ -261,12 +274,14 @@ void read_conf(int argc, const char *argv[]) {
 
 	if ( ferror(stdin) ) {
         	fprintf(stderr, "failed to read from stdin.\n");
+		sqlite3_exec(db, "ROLLBACK;", NULL, NULL, NULL);
 		exit(EX_IOERR);
 	}
 
 	if ( sqlite3_exec(db, "COMMIT;", NULL, NULL, &err) != SQLITE_OK ) {
 		fprintf(stderr, "failed to commit transaction : %s\n", err);
 		sqlite3_finalize(insert_param);
+		sqlite3_exec(db, "ROLLBACK;", NULL, NULL, NULL);
 		exit(EX_SOFTWARE);
 	}
 }
@@ -616,6 +631,116 @@ void retrieve_file(int argc, const char *argv[]) {
 	sqlite3_blob_close(blob);
 }
 
+void ls(int argc, const char *argv[]) {
+	if ( argc != 3 )
+		usage(argv[0]);
+	
+	sqlite3_stmt *select_files = NULL;
+	if ( sqlite3_prepare_v2(db, "SELECT LENGTH(Content), Name FROM Files;", -1, &select_files, NULL) != SQLITE_OK ) {
+        	fprintf(stderr, "failed to prepare statement : %s\n", sqlite3_errmsg(db));
+		sqlite3_finalize(select_files);
+		exit(EX_SOFTWARE);
+	}
+
+	int is_empty = 1;
+	while ( 1 ) {
+		switch ( sqlite3_step(select_files) ) {
+        		case SQLITE_DONE:
+				sqlite3_finalize(select_files);
+				if ( is_empty ) {
+					fprintf(stderr, "Their are no files stored in the database.\n");
+					exit(1);
+				}
+				return;
+			
+			case SQLITE_ROW: {
+				const int            len  = sqlite3_column_int(select_files, 0);
+				const unsigned char *name = sqlite3_column_text(select_files, 1);
+				is_empty = 0;
+
+                                if ( printf("%11i\t%s\n", len, name) < 0 ) {
+					sqlite3_finalize(select_files);
+					fputs("failed to write to standard output.\n", stderr);
+					exit(EX_IOERR);
+				}
+				break;
+			}
+
+			default:
+				fprintf(stderr, "failed to step trough result set : %s\n", sqlite3_errmsg(db));
+				sqlite3_finalize(select_files);
+				exit(EX_SOFTWARE);
+				break;
+		}
+
+	}
+}
+
+void del(int argc, const char *argv[]) {
+	if ( argc != 4 )
+		usage(argv[0]);
+
+	if ( sqlite3_exec(db, "BEGIN;", NULL, NULL, NULL) != SQLITE_OK ) {
+		fprintf(stderr, "failed to begin commit : %s\n", sqlite3_errmsg(db));
+		exit(EX_SOFTWARE);
+	}
+	
+	sqlite3_stmt *select_edge = NULL;
+	if ( sqlite3_prepare_v2(db, "SELECT COUNT(*) FROM Edges WHERE File = ?;", -1, &select_edge, NULL) != SQLITE_OK ) {
+        	fprintf(stderr, "failed to prepare statement : %s\n", sqlite3_errmsg(db));
+		sqlite3_finalize(select_edge);
+		exit(EX_SOFTWARE);
+	}
+	if ( sqlite3_bind_text(select_edge, 1, argv[3], -1, SQLITE_STATIC) != SQLITE_OK ) {
+		fprintf(stderr, "failed to bind parameter to statement : %s\n", sqlite3_errmsg(db));
+		sqlite3_finalize(select_edge);
+		exit(EX_SOFTWARE);
+	}
+
+	sqlite3_stmt *delete_file = NULL;
+	if ( sqlite3_prepare_v2(db, "DELETE FROM Files WHERE Name = ?;", -1, &delete_file, NULL) != SQLITE_OK ) {
+		fprintf(stderr, "failed to perpare statement : %s\n", sqlite3_errmsg(db));
+		sqlite3_finalize(select_edge);
+		sqlite3_finalize(delete_file);
+		exit(EX_SOFTWARE);
+	}
+
+	if ( sqlite3_bind_text(delete_file, 1, argv[3], -1, SQLITE_STATIC) != SQLITE_OK ) {
+		fprintf(stderr, "failed to bind parameter to statement : %s\n", sqlite3_errmsg(db));
+		sqlite3_finalize(select_edge);
+		sqlite3_finalize(delete_file);
+		exit(EX_SOFTWARE);
+	}
+	
+	int count = 0;
+	if ( sqlite3_step(select_edge) == SQLITE_ROW ) {
+		count = sqlite3_column_int(select_edge, 0);
+	} else {
+                fprintf(stderr, "failed to count the edges attached to this file : %s\n", sqlite3_errmsg(db));
+                sqlite3_finalize(select_edge);
+		sqlite3_finalize(delete_file);
+		exit(EX_SOFTWARE);
+	}
+        sqlite3_finalize(select_edge);
+	if ( count != 0 ) {
+		fprintf(stderr, "The file named \"%s\" is attached to configs.\n", argv[3]);
+		sqlite3_finalize(delete_file);
+		exit(1);
+	}
+
+	if ( sqlite3_step(delete_file) != SQLITE_DONE ) {
+        	fprintf(stderr, "failed to delete the file named \"%s\" : %s\n", argv[3], sqlite3_errmsg(db));
+		sqlite3_finalize(delete_file);
+		exit(EX_SOFTWARE);
+	}
+	sqlite3_finalize(delete_file);
+
+	if ( sqlite3_exec(db, "COMMIT;", NULL, NULL, NULL) != SQLITE_OK ) {
+		fprintf(stderr, "failed to commit transaction %s\n", sqlite3_errmsg(db));
+		exit(EX_SOFTWARE);
+	}
+}
+
 int main(int argc, const char *argv[]) {
 	if ( argc < 2 || get_verb(argv[1]) )
 		usage(argv[0]);
@@ -648,6 +773,14 @@ int main(int argc, const char *argv[]) {
 
 		case get_file:
 			retrieve_file(argc, argv);
+			break;
+		
+		case list_files:
+			ls(argc, argv);
+			break;
+
+		case delete_file:
+			del(argc, argv);
 			break;
 
 		default:
