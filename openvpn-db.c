@@ -179,12 +179,12 @@ void show_conf(int argc, const char *argv[]) {
 				
 				if ( value != NULL && printf("%s %s\n", param, value) < 0 ) {
 					sqlite3_finalize(select_name);
-					fputs("faield to write to standard output.\n", stderr);
+					fputs("failed to write to standard output.\n", stderr);
 					exit(EX_IOERR);
 				}
 				if ( value == NULL && printf("%s\n", param) < 0 ) {
 					sqlite3_finalize(select_name);
-					fputs("faield to write to standard output.\n", stderr);
+					fputs("failed to write to standard output.\n", stderr);
 					exit(EX_IOERR);
 				}
 				break;
@@ -779,8 +779,116 @@ void add_edge(int argc, const char *argv[]) {
 	if ( argc != 5 )
 		usage(argv[0]);
 
-	
+	sqlite3_stmt *insert_edge = NULL;
+	if ( sqlite3_prepare_v2(db, "INSERT OR REPLACE INTO Edges ( Name, File ) VALUES ( ?, ? );", -1, &insert_edge, NULL) != SQLITE_OK ) {
+        	fprintf(stderr, "failed to prepare statement : %s\n", sqlite3_errmsg(db));
+		sqlite3_finalize(insert_edge);
+		exit(EX_SOFTWARE);
+	}
+	if ( sqlite3_bind_text(insert_edge, 1, argv[3], -1, SQLITE_STATIC) != SQLITE_OK ) {
+		fprintf(stderr, "failed to bind parameter to statement : %s\n", sqlite3_errmsg(db));
+		sqlite3_finalize(insert_edge);
+		exit(EX_SOFTWARE);
+	}
+        if ( sqlite3_bind_text(insert_edge, 2, argv[4], -1, SQLITE_STATIC) != SQLITE_OK ) {
+        	fprintf(stderr, "failed to bind parameter to statement : %s\n", sqlite3_errmsg(db));
+		sqlite3_finalize(insert_edge);
+		exit(EX_SOFTWARE);
+	}
+
+	if ( sqlite3_step(insert_edge) != SQLITE_DONE ) {
+		fprintf(stderr, "failed to insert edge : %s\n", sqlite3_errmsg(db));
+		sqlite3_finalize(insert_edge);
+		exit(EX_SOFTWARE);
+	}
+	sqlite3_finalize(insert_edge);
 }
+
+void del_edge(int argc, const char *argv[]) {
+	if ( argc != 5 )
+		usage(argv[0]);
+	
+	sqlite3_stmt *delete_edge = NULL;
+	if ( sqlite3_prepare_v2(db, "DELETE FROM Edges WHERE Name = ? AND File = ?;", -1, &delete_edge, NULL) != SQLITE_OK ) {
+        	fprintf(stderr, "failed to prepare statement : %s\n", sqlite3_errmsg(db));
+		sqlite3_finalize(delete_edge);
+		exit(EX_SOFTWARE);
+	}
+	if ( sqlite3_bind_text(delete_edge, 1, argv[3], -1, SQLITE_STATIC) != SQLITE_OK ) {
+		fprintf(stderr, "failed to bind parameter to statement : %s\n", sqlite3_errmsg(db));
+		sqlite3_finalize(delete_edge);
+		exit(EX_SOFTWARE);
+	}
+	if ( sqlite3_bind_text(delete_edge, 2, argv[4], -1, SQLITE_STATIC) != SQLITE_OK ) {
+		fprintf(stderr, "failed to bind parameter to statement : %s\n", sqlite3_errmsg(db));
+		sqlite3_finalize(delete_edge);
+		exit(EX_SOFTWARE);
+	}
+
+	if ( sqlite3_step(delete_edge) != SQLITE_DONE ) {
+		fprintf(stderr, "failed to bind parameter to statement : %s\n", sqlite3_errmsg(db));
+		sqlite3_finalize(delete_edge);
+		exit(EX_SOFTWARE);
+	}
+	sqlite3_finalize(delete_edge);
+}
+
+void list_edges(int argc, const char *argv[]) {
+	if ( argc != 4 )
+		usage(argv[0]);
+
+	if ( sqlite3_exec(db, "BEGIN;", NULL, NULL, NULL) != SQLITE_OK ) {
+		fprintf(stderr, "failed begin transaction : %s\n", sqlite3_errmsg(db));
+		exit(EX_SOFTWARE);
+	}
+	
+	sqlite3_stmt *select_edge = NULL;
+	if ( sqlite3_prepare_v2(db, "SELECT File FROM Edges WHERE Name = ?;", -1, &select_edge, NULL) != SQLITE_OK ) {
+        	fprintf(stderr, "failed to prepare statement : %s\n", sqlite3_errmsg(db));
+		sqlite3_finalize(select_edge);
+		sqlite3_exec(db, "ROLLBACK;", NULL, NULL, NULL);
+		exit(EX_SOFTWARE);
+	}
+	if ( sqlite3_bind_text(select_edge, 1, argv[3], -1, SQLITE_STATIC) != SQLITE_OK ) {
+		fprintf(stderr, "failed to bind parameter to statement : %s\n", sqlite3_errmsg(db));
+		sqlite3_finalize(select_edge);
+		sqlite3_exec(db, "ROLLBACK;", NULL, NULL, NULL);
+		exit(EX_SOFTWARE);
+	}
+	
+	int is_empty = 1;
+	while ( 1 ) {
+		switch ( sqlite3_step(select_edge) ) {
+			case SQLITE_DONE:
+				sqlite3_finalize(select_edge);
+				sqlite3_exec(db, "COMMIT;", NULL, NULL, NULL);
+				if ( is_empty ) {
+					fprintf(stderr, "Their is no file attached to the config named \"%s\".\n", argv[3]);
+					exit(1);
+				}
+				return;
+			
+			case SQLITE_ROW: {
+				const unsigned char *file = sqlite3_column_text(select_edge, 0);
+				is_empty = 0;
+
+                                if ( printf("%s\n", file) < 0 ) {
+					sqlite3_finalize(select_edge);
+					fputs("failed to write to standard output.\n", stderr);
+					exit(EX_IOERR);
+				}
+				break;
+			}
+
+			default:
+				fprintf(stderr, "failed to step trough result set : %s\n", sqlite3_errmsg(db));
+				sqlite3_finalize(select_edge);
+				sqlite3_exec(db, "ROLLBACK;", NULL, NULL, NULL);
+				exit(EX_SOFTWARE);
+				break;
+		}
+	}
+}                                            
 
 int main(int argc, const char *argv[]) {
 	if ( argc < 2 || get_verb(argv[1]) )
@@ -828,6 +936,14 @@ int main(int argc, const char *argv[]) {
 			add_edge(argc, argv);
 			break;
 		
+		case detach_file:
+			del_edge(argc, argv);
+			break;
+		
+		case list_attached:
+			list_edges(argc, argv);
+			break;
+
 		default:
 			usage(argv[0]);
 			break;
