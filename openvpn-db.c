@@ -87,7 +87,7 @@ void close_db(void) {
 	if ( db == NULL )
 		return;
 
-	switch ( sqlite3_close(db) != SQLITE_OK ) {
+	switch ( sqlite3_close(db) ) {
 		case SQLITE_OK: break;
 		case SQLITE_BUSY:
 			fputs("Failed to close database. The database is busy.\n", stderr);
