@@ -711,6 +711,22 @@ void del(int argc, const char *argv[]) {
 		sqlite3_finalize(delete_file);
 		exit(EX_SOFTWARE);
 	}
+
+	sqlite3_stmt *count_file = NULL;
+	if ( sqlite3_prepare_v2(db, "SELECT COUNT (*) FROM Files WHERE Name = ?;", -1, &count_file, NULL) != SQLITE_OK ) {
+		fprintf(stderr, "failed to prepare statement : %s\n", sqlite3_errmsg(db));
+		sqlite3_finalize(select_edge);
+		sqlite3_finalize(delete_file);
+		sqlite3_finalize(count_file);
+		exit(EX_SOFTWARE);
+	}
+	if ( sqlite3_bind_text(count_file, 1, argv[3], -1, SQLITE_STATIC) != SQLITE_OK ) {
+		fprintf(stderr, "failed to bind parameter to statement : %s\n", sqlite3_errmsg(db));
+		sqlite3_finalize(select_edge);
+		sqlite3_finalize(delete_file);
+		sqlite3_finalize(count_file);
+		exit(EX_SOFTWARE);
+	}
 	
 	int count = 0;
 	if ( sqlite3_step(select_edge) == SQLITE_ROW ) {
@@ -719,13 +735,31 @@ void del(int argc, const char *argv[]) {
                 fprintf(stderr, "failed to count the edges attached to this file : %s\n", sqlite3_errmsg(db));
                 sqlite3_finalize(select_edge);
 		sqlite3_finalize(delete_file);
+		sqlite3_finalize(count_file);
 		exit(EX_SOFTWARE);
 	}
         sqlite3_finalize(select_edge);
 	if ( count != 0 ) {
 		fprintf(stderr, "The file named \"%s\" is attached to configs.\n", argv[3]);
 		sqlite3_finalize(delete_file);
+		sqlite3_finalize(count_file);
 		exit(1);
+	}
+
+	int present = 0;
+	if ( sqlite3_step(count_file) == SQLITE_ROW ) {
+		present = sqlite3_column_int(count_file, 0);
+	} else {
+		fprintf(stderr, "failed to count file : %s\n", sqlite3_errmsg(db));
+		sqlite3_finalize(delete_file);
+		sqlite3_finalize(count_file);
+		exit(EX_SOFTWARE);
+	}
+	sqlite3_finalize(count_file);
+	if ( !present ) {
+        	fprintf(stderr, "Their is no file named \"%s\" to delete.\n", argv[3]);
+		sqlite3_finalize(delete_file);
+		exit(2);
 	}
 
 	if ( sqlite3_step(delete_file) != SQLITE_DONE ) {
@@ -739,6 +773,13 @@ void del(int argc, const char *argv[]) {
 		fprintf(stderr, "failed to commit transaction %s\n", sqlite3_errmsg(db));
 		exit(EX_SOFTWARE);
 	}
+}
+
+void add_edge(int argc, const char *argv[]) {
+	if ( argc != 5 )
+		usage(argv[0]);
+
+	
 }
 
 int main(int argc, const char *argv[]) {
@@ -783,6 +824,10 @@ int main(int argc, const char *argv[]) {
 			del(argc, argv);
 			break;
 
+		case attach_file:
+			add_edge(argc, argv);
+			break;
+		
 		default:
 			usage(argv[0]);
 			break;
