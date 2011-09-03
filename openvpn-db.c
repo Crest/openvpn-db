@@ -13,7 +13,8 @@
 typedef enum {
 	init, show, read_, get, list,
 	put_file, get_file, delete_file, list_files,
-	attach_file, detach_file, list_attached
+	attach_file, detach_file, list_attached,
+	extract
 } verb_t;
 
 typedef struct named_verb {
@@ -41,6 +42,8 @@ void usage(const char *name) {
 	fprintf(stderr, "       %s attach-file   <DB> <NAME> <FILE>\n", name);
 	fprintf(stderr, "       %s detach-file   <DB> <NAME> <FILE>\n", name);
 	fprintf(stderr, "       %s list-attached <DB> <NAME>\n", name);
+
+	fprintf(stderr, "       %s extract       <DB> <NAME>\n", name);
 	exit(EX_USAGE);
 }
 
@@ -58,6 +61,8 @@ int get_verb(const char *name) {
 		  .verb = delete_file },
 		{ .name = "detach-file",
 		  .verb = detach_file },
+		{ .name = "extract",
+		  .verb = extract },
 		{ .name = "get",
 		  .verb = get },
 		{ .name = "get-file",
@@ -942,6 +947,9 @@ int main(int argc, const char *argv[]) {
 		
 		case list_attached:
 			list_edges(argc, argv);
+			break;
+		
+		case extract:
 			break;
 
 		default:
