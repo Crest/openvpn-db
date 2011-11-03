@@ -1,5 +1,7 @@
-CFLAGS+=-std=c99 -Wall -pedantic -D_POSIX_C_SOURCE=200809 -D__BSD_VISIBLE -I/usr/local/include
-LDFLAGS+=-L/usr/local/lib -lsqlite3
+CFLAGS+=-std=c99 -Wall -pedantic -D_WITH_GETLINE -I/usr/local/include
+LDFLAGS+=-L/usr/local/lib -larchive -lsqlite3
+CC=clang
+
 all: openvpn-db
 
 clean:

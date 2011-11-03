@@ -4,3 +4,4 @@ openvpn-db
 .*.swp
 openvpn-db.core
 test
+tap0

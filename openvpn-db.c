@@ -8,13 +8,14 @@
 #include <unistd.h>
 #include <inttypes.h>
 
+#include <archive.h>
+#include <archive_entry.h>
 #include <sqlite3.h>
 
-typedef enum {
-	init, show, read_, get, list,
+typedef enum { init, show, read_, get, list,
 	put_file, get_file, delete_file, list_files,
 	attach_file, detach_file, list_attached,
-	extract
+	tar
 } verb_t;
 
 typedef struct named_verb {
@@ -43,7 +44,7 @@ void usage(const char *name) {
 	fprintf(stderr, "       %s detach-file   <DB> <NAME> <FILE>\n", name);
 	fprintf(stderr, "       %s list-attached <DB> <NAME>\n", name);
 
-	fprintf(stderr, "       %s extract       <DB> <NAME>\n", name);
+	fprintf(stderr, "       %s tar           <DB> <NAME>\n", name);
 	exit(EX_USAGE);
 }
 
@@ -61,8 +62,6 @@ int get_verb(const char *name) {
 		  .verb = delete_file },
 		{ .name = "detach-file",
 		  .verb = detach_file },
-		{ .name = "extract",
-		  .verb = extract },
 		{ .name = "get",
 		  .verb = get },
 		{ .name = "get-file",
@@ -80,7 +79,9 @@ int get_verb(const char *name) {
 		{ .name = "read",
 		  .verb = read_ },
 		{ .name = "show",
-		  .verb = show }
+		  .verb = show },
+		{ .name = "tar",
+		  .verb = tar }
 	};
 	const named_verb_t key = { .name = name, .verb = 0 };
 	const named_verb_t *const found = (const named_verb_t*) bsearch(&key, &verbs, sizeof(verbs) / sizeof(named_verb_t), sizeof(named_verb_t), cmp_verb);
@@ -92,13 +93,15 @@ void close_db(void) {
 	if ( db == NULL )
 		return;
 
-	switch ( sqlite3_close(db) ) {
+	int n;
+	switch ( n = sqlite3_close(db) ) {
 		case SQLITE_OK: break;
 		case SQLITE_BUSY:
 			fputs("Failed to close database. The database is busy.\n", stderr);
 			break;
 		default:
 			fputs("Failed to close database.\n", stderr);
+			fprintf(stderr, "Reason = %i\n", n);
 			break;
 	}
 }
@@ -895,6 +898,36 @@ void list_edges(int argc, const char *argv[]) {
 	}
 }                                            
 
+void write_archive(int argc, const char *argv[]) {
+	if ( argc != 4 ) {
+		usage(argv[0]);
+	}
+
+	struct archive       *a;
+	struct archive_entry *entry;
+	struct stat           st = { 0 };
+	char                  buff[8192];
+	int                   len;
+	int                   fd;
+	a = archive_write_new();
+	archive_write_set_compression_gzip(a);
+	archive_write_set_format_pax_restricted(a);
+	archive_write_open_fd(a, 1);
+
+	entry = archive_entry_new();
+	archive_entry_set_pathname(entry, "foo");
+	archive_entry_set_size(entry, strlen("test"));
+	archive_entry_set_filetype(entry, AE_IFREG);
+	archive_entry_set_perm(entry, 0644);
+	archive_write_header(a, entry);
+	archive_write_data(a, "test", strlen("test"));
+	archive_entry_free(entry);
+
+	archive_write_close(a);
+	archive_write_finish(a);
+}
+
+
 int main(int argc, const char *argv[]) {
 	if ( argc < 2 || get_verb(argv[1]) )
 		usage(argv[0]);
@@ -949,7 +982,8 @@ int main(int argc, const char *argv[]) {
 			list_edges(argc, argv);
 			break;
 		
-		case extract:
+		case tar:
+			write_archive(argc, argv);
 			break;
 
 		default:
